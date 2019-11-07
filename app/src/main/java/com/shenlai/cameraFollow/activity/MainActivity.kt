@@ -1,3 +1,4 @@
+@file:Suppress("DEPRECATION")
 package com.shenlai.cameraFollow.activity
 
 import android.app.Activity
@@ -16,7 +17,6 @@ import com.shenlai.cameraFollow.common.Constants
 import com.shenlai.cameraFollow.model.DrawInfo
 import com.shenlai.cameraFollow.util.ConfigUtil
 import com.shenlai.cameraFollow.util.DrawHelper
-import com.shenlai.cameraFollow.util.HexTest
 import com.shenlai.cameraFollow.util.camera.CameraHelper
 import com.shenlai.cameraFollow.util.camera.CameraListener
 import io.reactivex.Observable
@@ -40,7 +40,8 @@ class MainActivity : Activity() {
         if (debug) Log.i("MainActivity", log)
     }
 
-    private lateinit var cameraHelper: CameraHelper
+    private lateinit var frontCameraHelper: CameraHelper
+    private lateinit var backCameraHelper: CameraHelper
     private lateinit var frontDrawHelper: DrawHelper
     private lateinit var backDrawHelper: DrawHelper
     private lateinit var frontPreviewSize: Camera.Size
@@ -61,17 +62,16 @@ class MainActivity : Activity() {
         FaceEngine()
     }
 
-    private val timer = Timer()
-    private val MAXLINES = 200
-    private val BUFSIZE = 512
+    private val mReadBuffSize = 512
 
-    // NanoPC-T4 UART4
+    // NanoPC-T4 U_ART4
     private val devName = "/dev/ttyS4"
     private val speed: Long = 9600
     private val dataBits = 8
     private val stopBits = 1
     private var devfd = -1
-    private val readBuf = ByteArray(BUFSIZE)
+    private val readBuf = ByteArray(mReadBuffSize)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -107,6 +107,7 @@ class MainActivity : Activity() {
 
 
                     override fun onPreview(nv21: ByteArray, camera: Camera) {
+                        //log("set mCameraFrontBytes")
                         mCameraFrontBytes = nv21
                     }
 
@@ -127,7 +128,7 @@ class MainActivity : Activity() {
                 windowManager.defaultDisplay.getMetrics(metrics)
 
 
-                cameraHelper = CameraHelper.Builder()
+                frontCameraHelper = CameraHelper.Builder()
                     .previewViewSize(Point(mCameraFrontPreview.measuredWidth, mCameraFrontPreview.measuredHeight))
                     .rotation(windowManager.defaultDisplay.rotation)
                     .specificCameraId(frontCameraId)
@@ -136,8 +137,8 @@ class MainActivity : Activity() {
                     .cameraListener(cameraListener)
                     .previewSize(Point(1280, 720))
                     .build()
-                cameraHelper.init()
-                cameraHelper.start()
+                frontCameraHelper.init()
+                frontCameraHelper.start()
                 mCameraFrontPreview.viewTreeObserver.removeOnGlobalLayoutListener(this)
             }
         })
@@ -145,10 +146,9 @@ class MainActivity : Activity() {
             override fun onGlobalLayout() {
                 val cameraListener = object : CameraListener {
                     override fun onCameraOpened(camera: Camera, cameraId: Int, displayOrientation: Int, isMirror: Boolean) {
-                        if (devfd != -1) {
-                            //timer.schedule(mBackFaceDetectTask, 0, 20)
-                            //faceDetectThread.start()
-                        }
+//                        if (devfd != -1) {
+//                            turningThread.start()
+//                        }
                         log("onCameraOpened: $cameraId  $displayOrientation $isMirror")
                         backPreviewSize = camera.parameters.previewSize
                         backDrawHelper = DrawHelper(
@@ -166,9 +166,8 @@ class MainActivity : Activity() {
 
 
                     override fun onPreview(nv21: ByteArray, camera: Camera) {
-                        //if (mLastFaceTime>1000) {
+                        //log("set mCameraBackBytes")
                         mCameraBackBytes = nv21
-                        //}
                     }
 
                     override fun onCameraClosed() {
@@ -188,17 +187,17 @@ class MainActivity : Activity() {
                 windowManager.defaultDisplay.getMetrics(metrics)
 
 
-                cameraHelper = CameraHelper.Builder()
+                backCameraHelper = CameraHelper.Builder()
                     .previewViewSize(Point(mCameraBackPreview.measuredWidth, mCameraBackPreview.measuredHeight))
                     .rotation(windowManager.defaultDisplay.rotation)
                     .specificCameraId(backCameraId)
                     .isMirror(false)
                     .previewOn(mCameraBackPreview)
                     .cameraListener(cameraListener)
-                    .previewSize(Point(640, 480))
+                    .previewSize(Point(1280, 720))
                     .build()
-                cameraHelper.init()
-                cameraHelper.start()
+                backCameraHelper.init()
+                backCameraHelper.start()
                 mCameraBackPreview.viewTreeObserver.removeOnGlobalLayoutListener(this)
             }
         })
@@ -210,12 +209,11 @@ class MainActivity : Activity() {
             if (HardwareControler.select(devfd, 0, 0) != 1) {
                 continue
             }
-            val retSize = HardwareControler.read(devfd, readBuf, BUFSIZE)
+            val retSize = HardwareControler.read(devfd, readBuf, mReadBuffSize)
             if (retSize > 0) {
                 readyToSend = true
-                log("hardware ${sendCnt--} recv:${HexTest.byteArrToHex(readBuf.copyOfRange(0, retSize))}")
+                log("hardware ${sendCnt--} recv:${readBuf.copyOfRange(0, retSize).contentToString()}")
             }
-
         }
     })
 
@@ -260,90 +258,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private var mLastFaceTime = System.currentTimeMillis()
-    private var mReset = true
-    private fun faceDetect() {
-        if (mCameraBackBytes == null || !initHardware || !readyToSend) return
-        if (mFaceRectView != null) {
-            mFaceRectView.clearFaceInfo()
-        }
-        if (mFaceRectView1 != null) {
-            mFaceRectView1.clearFaceInfo()
-        }
-        val t = System.currentTimeMillis()
-        val faceInfoList = ArrayList<FaceInfo>()
-        var code = faceEngine.detectFaces(mCameraBackBytes, backPreviewSize.width, backPreviewSize.height, FaceEngine.CP_PAF_NV21, faceInfoList)
-        if (code == ErrorInfo.MOK && faceInfoList.size > 0) {
-            //log("front  camera onPreview: " + faceInfoList.size + " (" + frontPreviewSize.width + "," + frontPreviewSize.height + ")")
-            code = faceEngine.process(
-                mCameraBackBytes,
-                backPreviewSize.width,
-                backPreviewSize.height,
-                FaceEngine.CP_PAF_NV21,
-                faceInfoList,
-                processMask
-            )
-            if (code != ErrorInfo.MOK) {
-                return
-            }
-        } else {
-            var dt = t - mLastFaceTime
-            if (dt > 10000 && !mReset) {
-                mReset = true
-                resetMotor()
-                mLastFaceTime = t
-            }
-            return
-        }
-
-        val ageInfoList = ArrayList<AgeInfo>()
-        val genderInfoList = ArrayList<GenderInfo>()
-        val face3DAngleList = ArrayList<Face3DAngle>()
-        val faceLivenessInfoList = ArrayList<LivenessInfo>()
-        val ageCode = faceEngine.getAge(ageInfoList)
-        val genderCode = faceEngine.getGender(genderInfoList)
-        val face3DAngleCode = faceEngine.getFace3DAngle(face3DAngleList)
-        val livenessCode = faceEngine.getLiveness(faceLivenessInfoList)
-
-        //有其中一个的错误码不为0，return
-        if (ageCode or genderCode or face3DAngleCode or livenessCode != ErrorInfo.MOK) {
-            return
-        }
-
-        if (mFaceRectView != null) {
-            val drawInfoList = ArrayList<DrawInfo>()
-            for (i in faceInfoList.indices) {
-                drawInfoList.add(
-                    DrawInfo(
-                        backDrawHelper.adjustRect(faceInfoList[i].rect),
-                        genderInfoList[i].gender,
-                        ageInfoList[i].age,
-                        faceLivenessInfoList[i].liveness, null
-                    )
-                )
-            }
-            backDrawHelper.draw(mFaceRectView, drawInfoList)
-            val rect = faceInfoList[0].rect
-            val xy = getPosition(rect, backPreviewSize)
-            if (rect.centerX() in 536..544 && rect.centerY() in 950..970) {
-                toast("center")
-            }
-            if (xy[0] == 0 && xy[1] == 0) {
-                return
-            }
-            send(
-                byteArrayOf(
-                    0xA5.toByte(),
-                    getByte(xy[0], forwardX),
-                    getByte(xy[1], forwardY),
-                    0x00.toByte()
-                )
-            )
-            mReset = false
-            mLastFaceTime = t
-        }
-    }
-
     private var xScale = 40
     private var yScale = 30
     private fun getPosition(rect: Rect, size: Camera.Size): Array<Int> {
@@ -356,8 +270,8 @@ class MainActivity : Activity() {
         tx = x
         ty = y
 
-        forwardX = cx < 0
-        forwardY = cy > 0
+        forwardX = cx >= 0
+        forwardY = cy <= 0
 
         if (cx < 0) {
             cx = -cx
@@ -400,8 +314,8 @@ class MainActivity : Activity() {
 
 
     override fun onDestroy() {
-        cameraHelper.release()
-        timer.cancel()
+        frontCameraHelper.release()
+        backCameraHelper.release()
         if (devfd != -1) {
             HardwareControler.close(devfd)
             devfd = -1
@@ -470,34 +384,39 @@ class MainActivity : Activity() {
         if (ret > 0) {
             readyToSend = false
             ++sendCnt
-            val s = "hardware $sendCnt send:" + HexTest.byteArrToHex(cmd)
+            val s = "hardware $sendCnt send:${cmd.contentToString()}"
             log(s)
         }
     }
 
-    fun resetMotor(view: View) {
-        resetMotor()
-        xScale = XScale.text.toString().toInt()
-        yScale = YScale.text.toString().toInt()
-        xxScale = XXScale.text.toString().toInt()
-        yyScale = YYScale.text.toString().toInt()
+    fun resetParameter(view: View) {
+        if (view.id == R.id.mResetParameter) {
+            resetMotor()
+            xScale = XScale.text.toString().toInt()
+            yScale = YScale.text.toString().toInt()
+            xxScale = XXScale.text.toString().toInt()
+            yyScale = YYScale.text.toString().toInt()
+        }
     }
 
-    fun resetMotor0(view: View) {
-        readyToSend = true
-        if (tx == 0 && ty == 0) {
-            return
-        }
-        send(
-            byteArrayOf(
-                0xA5.toByte(),
-                getByte(abs(ty), tx > 0),
-                getByte(abs(ty), ty < 0),
-                0x00.toByte()
+    fun resetMotor(view: View) {
+        if (view.id == R.id.mResetMotor) {
+            readyToSend = true
+            if (tx == 0 && ty == 0) {
+                return
+            }
+            log("Reset:tx:$tx ty:$ty")
+            send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(abs(tx), tx < 0),
+                    getByte(abs(ty), ty > 0),
+                    0x00.toByte()
+                )
             )
-        )
-        tx = 0
-        ty = 0
+            tx = 0
+            ty = 0
+        }
     }
 
     private var xxScale = 5
@@ -516,8 +435,8 @@ class MainActivity : Activity() {
         tx += x
         ty += y
 
-        forwardX = cx > 0
-        forwardY = cy < 0
+        forwardX = cx <= 0
+        forwardY = cy >= 0
 
         if (cx < 0) {
             cx = -cx
@@ -528,13 +447,13 @@ class MainActivity : Activity() {
         return Point(cx, cy)
     }
 
-    private var faceDetectThread = Thread(Runnable {
+    private var turningThread = Thread(Runnable {
         while (devfd != -1) {
-            Thread.sleep(10)
-            if (!readyToSend || mCameraFrontBytes == null) {
+            log("readyToSend:$readyToSend mCameraFrontBytes==null:${mCameraFrontBytes == null} mCameraBackBytes==null:${mCameraBackBytes == null}")
+            if (!readyToSend || (mCameraFrontBytes == null && mCameraBackBytes == null)) {
+                Thread.sleep(50)
                 continue
             }
-
             val facesList = ArrayList<FaceInfo>()
             var code = faceEngine.detectFaces(
                 mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
@@ -673,6 +592,7 @@ class MainActivity : Activity() {
                     }
                 } else {
                     //TODO 没检测到人
+                    log("no face")
                     if (mFaceRectView != null) {
                         mFaceRectView.clearFaceInfo()
                     }
@@ -682,10 +602,73 @@ class MainActivity : Activity() {
     })
 
     fun start(view: View) {
-        if (devfd != -1) {
-            //timer.schedule(mBackFaceDetectTask, 0, 20)
-            if (!faceDetectThread.isAlive) {
-                faceDetectThread.start()
+        if (view.id == R.id.mStart) {
+            if (devfd != -1) {
+                if (!turningThread.isAlive) {
+                    turningThread.start()
+                }
+            }
+        }
+    }
+
+    fun click(view: View) {
+        when (view.id) {
+            R.id.mUp -> send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(0, true),
+                    getByte(1, true),
+                    0x00.toByte()
+                )
+            )
+            R.id.mDown -> send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(0, true),
+                    getByte(1, false),
+                    0x00.toByte()
+                )
+            )
+            R.id.mLeft -> send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(1, true),
+                    getByte(0, true),
+                    0x00.toByte()
+                )
+            )
+            R.id.mRight -> send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(1, false),
+                    getByte(0, true),
+                    0x00.toByte()
+                )
+            )
+        }
+    }
+
+    private fun startRecord() {
+        frontCameraHelper.record()
+        backCameraHelper.record()
+    }
+
+    private fun stopRecord() {
+        frontCameraHelper.stopRecord()
+        backCameraHelper.stopRecord()
+    }
+
+    fun record(view: View) {
+        when (view.id) {
+            R.id.mStartRecord -> {
+                startRecord()
+                mStartRecord.isClickable = false
+                mStopRecord.isClickable = true
+            }
+            R.id.mStopRecord -> {
+                stopRecord()
+                mStartRecord.isClickable = true
+                mStopRecord.isClickable = false
             }
         }
     }

@@ -4,6 +4,8 @@ import android.graphics.ImageFormat;
 import android.graphics.Point;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
+import android.media.MediaRecorder;
+import android.os.Environment;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -11,6 +13,7 @@ import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -19,6 +22,7 @@ import java.util.List;
 /**
  * 相机辅助类，和{@link CameraListener}共同使用，获取nv21数据等操作
  */
+@SuppressWarnings("deprecation")
 public class CameraHelper implements Camera.PreviewCallback {
     private static final String TAG = "CameraHelper";
     private Camera mCamera;
@@ -35,6 +39,10 @@ public class CameraHelper implements Camera.PreviewCallback {
     private Integer specificCameraId;
     private CameraListener cameraListener;
 
+    /**
+     * 录制视频
+     */
+    private MediaRecorder mediaRecorder;
     private CameraHelper(CameraHelper.Builder builder) {
         previewDisplayView = builder.previewDisplayView;
         specificCameraId = builder.specificCameraId;
@@ -62,69 +70,8 @@ public class CameraHelper implements Camera.PreviewCallback {
         }
     }
 
-    public void start() {
-        synchronized (this) {
-            if (mCamera != null) {
-                return;
-            }
-            //相机数量为2则打开1,1则打开0,相机ID 1为前置，0为后置
-            mCameraId = Camera.getNumberOfCameras() - 1;
-            //若指定了相机ID且该相机存在，则打开指定的相机
-            if (specificCameraId != null && specificCameraId <= mCameraId) {
-                mCameraId = specificCameraId;
-            }
-
-            //没有相机
-            if (mCameraId == -1) {
-                if (cameraListener != null) {
-                    cameraListener.onCameraError(new Exception("camera not found"));
-                }
-                return;
-            }
-            if (mCamera == null) {
-                mCamera = Camera.open(mCameraId);
-            }
-            displayOrientation = getCameraOri(rotation);
-            mCamera.setDisplayOrientation(displayOrientation);
-            try {
-                Camera.Parameters parameters = mCamera.getParameters();
-                parameters.setPreviewFormat(ImageFormat.NV21);
-
-                //预览大小设置
-                previewSize = parameters.getPreviewSize();
-                List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
-                if (supportedPreviewSizes != null && supportedPreviewSizes.size() > 0) {
-                    previewSize = getBestSupportedSize(supportedPreviewSizes, previewViewSize);
-                }
-                parameters.setPreviewSize(previewSize.width, previewSize.height);
-                //对焦模式设置
-                List<String> supportedFocusModes = parameters.getSupportedFocusModes();
-                if (supportedFocusModes != null && supportedFocusModes.size() > 0) {
-                    if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
-                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-                    } else if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
-                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
-                    } else if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
-                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
-                    }
-                }
-                mCamera.setParameters(parameters);
-                if (previewDisplayView instanceof TextureView) {
-                    mCamera.setPreviewTexture(((TextureView) previewDisplayView).getSurfaceTexture());
-                } else {
-                    mCamera.setPreviewDisplay(((SurfaceView) previewDisplayView).getHolder());
-                }
-                mCamera.setPreviewCallback(this);
-                mCamera.startPreview();
-                if (cameraListener != null) {
-                    cameraListener.onCameraOpened(mCamera, mCameraId, displayOrientation, isMirror);
-                }
-            } catch (Exception e) {
-                if (cameraListener != null) {
-                    cameraListener.onCameraError(e);
-                }
-            }
-        }
+    private void log(String str) {
+        Log.i("CameraHelper", str);
     }
 
     private int getCameraOri(int rotation) {
@@ -160,7 +107,7 @@ public class CameraHelper implements Camera.PreviewCallback {
         return result;
     }
 
-    public void stop() {
+    private void stop() {
         synchronized (this) {
             if (mCamera == null) {
                 return;
@@ -196,6 +143,9 @@ public class CameraHelper implements Camera.PreviewCallback {
     private Camera.Size getBestSupportedSize(List<Camera.Size> sizes, Point previewViewSize) {
         if (sizes == null || sizes.size() == 0) {
             return mCamera.getParameters().getPreviewSize();
+        }
+        for (Camera.Size s : sizes) {
+            log("support size:(" + s.width + "," + s.height + ")");
         }
         Camera.Size[] tempSizes = sizes.toArray(new Camera.Size[0]);
         Arrays.sort(tempSizes, new Comparator<Camera.Size>() {
@@ -433,4 +383,125 @@ public class CameraHelper implements Camera.PreviewCallback {
         }
     }
 
+    public Camera start() {
+        synchronized (this) {
+            if (mCamera != null) {
+                return mCamera;
+            }
+            //相机数量为2则打开1,1则打开0,相机ID 1为前置，0为后置
+            mCameraId = Camera.getNumberOfCameras() - 1;
+            //若指定了相机ID且该相机存在，则打开指定的相机
+            if (specificCameraId != null && specificCameraId <= mCameraId) {
+                mCameraId = specificCameraId;
+            }
+
+            //没有相机
+            if (mCameraId == -1) {
+                if (cameraListener != null) {
+                    cameraListener.onCameraError(new Exception("camera not found"));
+                }
+                return null;
+            }
+            if (mCamera == null) {
+                mCamera = Camera.open(mCameraId);
+            }
+            displayOrientation = getCameraOri(rotation);
+            mCamera.setDisplayOrientation(displayOrientation);
+            try {
+                Camera.Parameters parameters = mCamera.getParameters();
+                parameters.setPreviewFormat(ImageFormat.NV21);
+
+                //预览大小设置
+                previewSize = parameters.getPreviewSize();
+                List<Camera.Size> supportedPreviewSizes = parameters.getSupportedPreviewSizes();
+                if (supportedPreviewSizes != null && supportedPreviewSizes.size() > 0) {
+                    previewSize = getBestSupportedSize(supportedPreviewSizes, previewViewSize);
+                }
+                parameters.setPreviewSize(previewSize.width, previewSize.height);
+                //对焦模式设置
+                List<String> supportedFocusModes = parameters.getSupportedFocusModes();
+                if (supportedFocusModes != null && supportedFocusModes.size() > 0) {
+                    if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+                    } else if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+                    } else if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
+                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
+                    }
+                }
+                mCamera.setParameters(parameters);
+                if (previewDisplayView instanceof TextureView) {
+                    mCamera.setPreviewTexture(((TextureView) previewDisplayView).getSurfaceTexture());
+                } else {
+                    mCamera.setPreviewDisplay(((SurfaceView) previewDisplayView).getHolder());
+                }
+                mCamera.setPreviewCallback(this);
+                mCamera.startPreview();
+                if (cameraListener != null) {
+                    cameraListener.onCameraOpened(mCamera, mCameraId, displayOrientation, isMirror);
+                }
+            } catch (Exception e) {
+                if (cameraListener != null) {
+                    cameraListener.onCameraError(e);
+                }
+            }
+        }
+        return mCamera;
+    }
+
+    public void record() {
+        Log.d(TAG, "record: 开始录制");
+        mediaRecorder = new MediaRecorder();
+        mCamera.unlock();
+        mediaRecorder.setCamera(mCamera);
+        //mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mediaRecorder.setVideoSource(MediaRecorder.VideoSource.DEFAULT);
+//        mediaRecorder.setProfile(CamcorderProfile.get(CamcorderProfile.QUALITY_HIGH)); //setProfile不能和后面的setOutputFormat等方法一起使用
+        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);  // 设置视频的输出格式 为MP4
+
+        //mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.DEFAULT); // 设置音频的编码格式
+        mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264); // 设置视频的编码格式
+//        mediaRecorder.setVideoSize(176, 144);  // 设置视频大小
+        //mediaRecorder.setVideoSize(1280, 720);  // 设置视频大小
+//        mediaRecorder.setVideoSize(previewSize.width, previewSize.height);  // 设置视频大小
+        mediaRecorder.setVideoSize(previewSize.width, previewSize.height);  // 设置视频大小
+        mediaRecorder.setVideoEncodingBitRate(10 * 1280 * 720);
+        mediaRecorder.setVideoFrameRate(30); // 设置帧率
+
+        //设置视频存储路径
+        File file = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES) + File.separator + "sl");
+        if (!file.exists()) {
+            //多级文件夹的创建
+            if (file.mkdirs()) {
+                //TODO
+                Log.e(TAG, "mkdir: " + file.getAbsolutePath());
+            }
+        }
+
+        File f = new File(file.getPath() + File.separator + "test" + mCameraId + ".mp4");
+        if (f.exists()) {
+            if (f.delete()) {
+                Log.e(TAG, "delete: " + file.getAbsolutePath());
+            }
+        }
+        Log.d(TAG, "record path:" + f.getPath());
+        mediaRecorder.setOutputFile(f.getPath());
+
+        //开始录制
+        try {
+            mediaRecorder.prepare();
+            mediaRecorder.start();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void stopRecord() {
+        mCamera.lock();
+        mediaRecorder.stop();
+        mediaRecorder.reset();
+        mediaRecorder.release();
+        mCamera.setPreviewCallback(this);
+        Log.d(TAG, "stop: 录制完成");
+    }
 }

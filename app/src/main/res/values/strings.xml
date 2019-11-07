@@ -45,4 +45,20 @@
     <string name="draw_ir_rect_mirror_vertical">draw IR face rect mirror vertical</string>
     <string name="reset">Reset</string>
     <string name="start">start</string>
+    <string name="reset_parameter">ResetParameter</string>
+    <string name="center">center</string>
+    <string name="up">up</string>
+    <string name="down">down</string>
+    <string name="left">left</string>
+    <string name="right">right</string>
+    <string name="reset_motor">resetMotor</string>
+    <string name="start_record">startRecord</string>
+    <string name="stop_record">stopRecord</string>
+    <string name="h_scale_0">水平角度0</string>
+    <string name="_40">40</string>
+    <string name="v_scale_0">垂直角度0</string>
+    <string name="_30">30</string>
+    <string name="h_scale_1">水平角度1</string>
+    <string name="_5">5</string>
+    <string name="v_scale_1">垂直角度1</string>
 </resources>

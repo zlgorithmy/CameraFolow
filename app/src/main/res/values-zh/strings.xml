@@ -45,4 +45,20 @@
     <string name="draw_ir_rect_mirror_vertical">IR人脸框垂直镜像绘制</string>
     <string name="reset">重置</string>
     <string name="start">开始</string>
+    <string name="reset_parameter">修改参数</string>
+    <string name="center">中点</string>
+    <string name="up">上</string>
+    <string name="down">下</string>
+    <string name="left">左</string>
+    <string name="right">右</string>
+    <string name="reset_motor">相机归位</string>
+    <string name="start_record">开始录像</string>
+    <string name="stop_record">停止录像</string>
+    <string name="h_scale_0">水平角度0</string>
+    <string name="_40">40</string>
+    <string name="v_scale_0">垂直角度0</string>
+    <string name="_30">30</string>
+    <string name="h_scale_1">水平角度1</string>
+    <string name="_5">5</string>
+    <string name="v_scale_1">垂直角度1</string>
 </resources>

@@ -105,8 +105,7 @@
                 android:autofillHints="@string/v_scale_0"
                 android:hint="@string/v_scale_0"
                 android:inputType="number"
-                android:text="@string/_30"
-                tools:targetApi="o" />
+                android:text="@string/_30" />
 
             <EditText
                 android:id="@+id/XXScale"
