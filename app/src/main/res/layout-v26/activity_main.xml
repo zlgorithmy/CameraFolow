@@ -27,7 +27,7 @@
                 tools:ignore="PxUsage" />
 
             <com.shenlai.cameraFollow.widget.FaceRectView
-                android:id="@+id/mFaceRectView1"
+                android:id="@+id/mFrontFaceRectView"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 tools:ignore="PxUsage" />
@@ -51,7 +51,7 @@
                 android:layout_height="match_parent" />
 
             <com.shenlai.cameraFollow.widget.FaceRectView
-                android:id="@+id/mFaceRectView"
+                android:id="@+id/mBackFaceRectView"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 

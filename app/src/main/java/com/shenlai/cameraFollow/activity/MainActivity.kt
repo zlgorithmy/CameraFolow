@@ -29,6 +29,7 @@ import kotlinx.android.synthetic.main.activity_main.*
 import org.jetbrains.anko.toast
 import java.util.*
 import kotlin.math.abs
+import kotlin.math.max
 
 @ExperimentalStdlibApi
 class MainActivity : Activity() {
@@ -55,9 +56,9 @@ class MainActivity : Activity() {
                 FaceEngine.ASF_GENDER or
                 FaceEngine.ASF_LIVENESS
     private val initMask =
-        FaceEngine.ASF_FACE_DETECT or processMask
-    private val detectFaceScaleVal = 32 //2-32(default 16)
-    private val detectFaceMaxNum = 1 //0-50
+        FaceEngine.ASF_FACE_DETECT or FaceEngine.ASF_FACE_RECOGNITION or processMask
+    private val detectFaceScaleVal = 16 //2-32(default 16)
+    private val detectFaceMaxNum = 10 //0-50
     private val faceEngine: FaceEngine by lazy {
         FaceEngine()
     }
@@ -267,6 +268,9 @@ class MainActivity : Activity() {
         var cy = y - ty //需要移动的距离y
         log("face1:当前位置:($tx,$ty) 目标位置($x,$y) 需要移动:($cx,$cy) center:(${rect.centerX()},${rect.centerY()}) size:(${size.width / 2},${size.height / 2})")
 
+        if (cx in -1..1 && cy in -1..1) {
+            return arrayOf(0, 0)
+        }
         tx = x
         ty = y
 
@@ -447,7 +451,232 @@ class MainActivity : Activity() {
         return Point(cx, cy)
     }
 
-    private var turningThread = Thread(Runnable {
+    //维护已经扫描过的队列
+    private var scanList: MutableList<FaceFeature> = ArrayList()
+
+    //是否微调
+    private fun addFace(face: FaceFeature): Boolean {
+        log("addFace scanList.size:${scanList.size}")
+        var maxScore = 0.0f
+        val faceSimilar = FaceSimilar()
+        for ((idx, face0) in scanList.withIndex()) {
+            var code = faceEngine.compareFaceFeature(face0, face, faceSimilar)
+            maxScore = max(maxScore, faceSimilar.score)
+            log("addFace code:$code idx:$idx score:${faceSimilar.score} maxScore:${faceSimilar.score}")
+        }
+        if (maxScore < 0.2) {
+            if (scanList.size > 50) {
+                scanList.removeAt(0)
+            }
+            scanList.add(face)
+            return true
+        }
+        return false
+    }
+
+    //比较是否是同一个人
+    private fun compare(face0: FaceFeature, face1: FaceFeature): Boolean {
+        var f: FaceSimilar = FaceSimilar()
+        faceEngine.compareFaceFeature(face0, face1, f)
+        return f.score > 0.5f
+    }
+
+    //前置摄像头微调，返回是否微调
+    private fun fineTurning(): Boolean {
+        val facesList = ArrayList<FaceInfo>()
+        var code = faceEngine.detectFaces(
+            mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
+            facesList
+        )
+
+        //是否检测到人脸
+        if (code != ErrorInfo.MOK || facesList.isEmpty()) {
+            return false
+        }
+
+        code = faceEngine.process(
+            mCameraFrontBytes,
+            frontPreviewSize.width,
+            frontPreviewSize.height,
+            FaceEngine.CP_PAF_NV21,
+            facesList,
+            processMask
+        )
+
+        //是否有人脸信息
+        if (code != ErrorInfo.MOK || facesList.isEmpty()) {
+            return false
+        }
+        if (mBackFaceRectView != null) {
+            mBackFaceRectView.clearFaceInfo()
+        }
+        if (mFrontFaceRectView != null) {
+            mFrontFaceRectView.clearFaceInfo()
+        }
+
+        val ageInfoList = ArrayList<AgeInfo>()
+        val genderInfoList = ArrayList<GenderInfo>()
+        val face3DAngleList = ArrayList<Face3DAngle>()
+        val faceLivenessInfoList = ArrayList<LivenessInfo>()
+        val ageCode = faceEngine.getAge(ageInfoList)
+        val genderCode = faceEngine.getGender(genderInfoList)
+        val face3DAngleCode = faceEngine.getFace3DAngle(face3DAngleList)
+        val livenessCode = faceEngine.getLiveness(faceLivenessInfoList)
+
+        //有其中一个的错误码不为0，return
+        if (ageCode or genderCode or face3DAngleCode or livenessCode != ErrorInfo.MOK) {
+            return false
+        }
+
+        if (mFrontFaceRectView != null) {
+            val drawInfoList = ArrayList<DrawInfo>()
+            for (i in facesList.indices) {
+                drawInfoList.add(
+                    DrawInfo(
+                        frontDrawHelper.adjustRect(facesList[i].rect),
+                        genderInfoList[i].gender,
+                        ageInfoList[i].age,
+                        faceLivenessInfoList[i].liveness, null
+                    )
+                )
+            }
+            frontDrawHelper.draw(mFrontFaceRectView, drawInfoList)
+        }
+
+        var f = FaceFeature()
+        code = faceEngine.extractFaceFeature(
+            mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
+            facesList[0], f
+        )
+        if (code == ErrorInfo.MOK) {
+            addFace(f)
+        }
+
+        var rect = facesList.first().rect
+        val xy = fineTuning(rect, frontPreviewSize)
+        log("微调$xy")
+        if (xy.equals(0, 0)) {
+            return false
+        }
+        send(
+            byteArrayOf(
+                0xA5.toByte(),
+                getByte(xy.x, forwardX),
+                getByte(xy.y, forwardY),
+                0x00.toByte()
+            )
+        )
+        return true
+    }
+
+    private fun turning(): Boolean {
+        if (mFrontFaceRectView != null) {
+            mFrontFaceRectView.clearFaceInfo()
+        }
+        val facesList = ArrayList<FaceInfo>()
+        var code = faceEngine.detectFaces(
+            mCameraBackBytes, backPreviewSize.width, backPreviewSize.height, FaceEngine.CP_PAF_NV21,
+            facesList
+        )
+        if (code != ErrorInfo.MOK || facesList.isEmpty()) {
+            log("no face")
+            if (mBackFaceRectView != null) {
+                mBackFaceRectView.clearFaceInfo()
+            }
+            return false
+        }
+
+        //需要被扫描的id
+        var id = 0
+        var minScore = 1.0f
+        for ((idx, face) in facesList.withIndex()) {
+            var f = FaceFeature()
+            code = faceEngine.extractFaceFeature(
+                mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
+                face, f
+            )
+            if (code != ErrorInfo.MOK) {
+                continue
+            }
+
+            var similar = FaceSimilar()
+            for (face0 in scanList) {
+                faceEngine.compareFaceFeature(face0, f, similar)
+                if (similar.score > 0.5) {
+                    break
+                }
+            }
+            if (similar.score < minScore) {
+                id = idx
+                minScore = similar.score
+            }
+
+            if (minScore < 0.1f) {
+                break
+            }
+        }
+
+        code = faceEngine.process(
+            mCameraBackBytes,
+            backPreviewSize.width,
+            backPreviewSize.height,
+            FaceEngine.CP_PAF_NV21,
+            facesList,
+            processMask
+        )
+        mCameraBackBytes = null
+        if (code != ErrorInfo.MOK || facesList.isEmpty()) {
+            return false
+        }
+        val ageInfoList = ArrayList<AgeInfo>()
+        val genderInfoList = ArrayList<GenderInfo>()
+        val face3DAngleList = ArrayList<Face3DAngle>()
+        val faceLivenessInfoList = ArrayList<LivenessInfo>()
+        val ageCode = faceEngine.getAge(ageInfoList)
+        val genderCode = faceEngine.getGender(genderInfoList)
+        val face3DAngleCode = faceEngine.getFace3DAngle(face3DAngleList)
+        val livenessCode = faceEngine.getLiveness(faceLivenessInfoList)
+
+        //有其中一个的错误码不为0，return
+        if (ageCode or genderCode or face3DAngleCode or livenessCode != ErrorInfo.MOK) {
+            return false
+        }
+
+        if (mBackFaceRectView != null) {
+            val drawInfoList = ArrayList<DrawInfo>()
+            for (i in facesList.indices) {
+                var name = "n_scan"
+                if (i == id) {
+                    name = "scanning"
+                }
+                drawInfoList.add(
+                    DrawInfo(
+                        backDrawHelper.adjustRect(facesList[i].rect),
+                        genderInfoList[i].gender,
+                        ageInfoList[i].age,
+                        faceLivenessInfoList[i].liveness, name
+                    )
+                )
+            }
+            backDrawHelper.draw(mBackFaceRectView, drawInfoList)
+            val rect0 = facesList[id].rect
+            val xy = getPosition(rect0, backPreviewSize)
+            if (xy[0] == 0 && xy[1] == 0) {
+                return false
+            }
+            send(
+                byteArrayOf(
+                    0xA5.toByte(),
+                    getByte(xy[0], forwardX),
+                    getByte(xy[1], forwardY),
+                    0x00.toByte()
+                )
+            )
+        }
+        return true
+    }
+
+    private var turningThread0 = Thread(Runnable {
         while (devfd != -1) {
             log("readyToSend:$readyToSend mCameraFrontBytes==null:${mCameraFrontBytes == null} mCameraBackBytes==null:${mCameraBackBytes == null}")
             if (!readyToSend || (mCameraFrontBytes == null && mCameraBackBytes == null)) {
@@ -474,11 +703,11 @@ class MainActivity : Activity() {
                 if (code != ErrorInfo.MOK || facesList.isEmpty()) {
                     continue
                 }
-                if (mFaceRectView != null) {
-                    mFaceRectView.clearFaceInfo()
+                if (mBackFaceRectView != null) {
+                    mBackFaceRectView.clearFaceInfo()
                 }
-                if (mFaceRectView1 != null) {
-                    mFaceRectView1.clearFaceInfo()
+                if (mFrontFaceRectView != null) {
+                    mFrontFaceRectView.clearFaceInfo()
                 }
 
                 val ageInfoList = ArrayList<AgeInfo>()
@@ -495,7 +724,7 @@ class MainActivity : Activity() {
                     continue
                 }
 
-                if (mFaceRectView1 != null) {
+                if (mFrontFaceRectView != null) {
                     val drawInfoList = ArrayList<DrawInfo>()
                     for (i in facesList.indices) {
                         drawInfoList.add(
@@ -507,9 +736,15 @@ class MainActivity : Activity() {
                             )
                         )
                     }
-                    frontDrawHelper.draw(mFaceRectView1, drawInfoList)
+                    frontDrawHelper.draw(mFrontFaceRectView, drawInfoList)
                 }
 
+                var f = FaceFeature()
+                faceEngine.extractFaceFeature(
+                    mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
+                    facesList[0], f
+                )
+                addFace(f)
 
                 //TODO 微调
                 rect = facesList.first().rect
@@ -527,8 +762,8 @@ class MainActivity : Activity() {
                     )
                 )
             } else {
-                if (mFaceRectView1 != null) {
-                    mFaceRectView1.clearFaceInfo()
+                if (mFrontFaceRectView != null) {
+                    mFrontFaceRectView.clearFaceInfo()
                 }
                 //TODO 寻找人脸
                 code = faceEngine.detectFaces(
@@ -536,6 +771,17 @@ class MainActivity : Activity() {
                     facesList
                 )
                 if (code == ErrorInfo.MOK && facesList.isNotEmpty()) {
+
+                    var fst: MutableList<FaceFeature> = ArrayList()
+                    for (face in facesList) {
+                        var f = FaceFeature()
+                        faceEngine.extractFaceFeature(
+                            mCameraFrontBytes, frontPreviewSize.width, frontPreviewSize.height, FaceEngine.CP_PAF_NV21,
+                            face, f
+                        )
+                        fst.add(f)
+                    }
+
                     //TODO 调整
                     code = faceEngine.process(
                         mCameraBackBytes,
@@ -563,7 +809,7 @@ class MainActivity : Activity() {
                         continue
                     }
 
-                    if (mFaceRectView != null) {
+                    if (mBackFaceRectView != null) {
                         val drawInfoList = ArrayList<DrawInfo>()
                         for (i in facesList.indices) {
                             drawInfoList.add(
@@ -575,7 +821,7 @@ class MainActivity : Activity() {
                                 )
                             )
                         }
-                        backDrawHelper.draw(mFaceRectView, drawInfoList)
+                        backDrawHelper.draw(mBackFaceRectView, drawInfoList)
                         val rect0 = facesList[0].rect
                         val xy = getPosition(rect0, backPreviewSize)
                         if (xy[0] == 0 && xy[1] == 0) {
@@ -593,11 +839,33 @@ class MainActivity : Activity() {
                 } else {
                     //TODO 没检测到人
                     log("no face")
-                    if (mFaceRectView != null) {
-                        mFaceRectView.clearFaceInfo()
+                    if (mBackFaceRectView != null) {
+                        mBackFaceRectView.clearFaceInfo()
                     }
                 }
             }
+        }
+    })
+    private var turningThread = Thread(Runnable {
+        while (devfd != -1) {
+            //log("readyToSend:$readyToSend mCameraFrontBytes==null:${mCameraFrontBytes == null} mCameraBackBytes==null:${mCameraBackBytes == null}")
+            if (!readyToSend || (mCameraFrontBytes == null && mCameraBackBytes == null)) {
+                Thread.sleep(50)
+                continue
+            }
+            log("  ")
+            log("  ")
+            log("\n\n-------------------------------------------------------------------------------------")
+            if (fineTurning()) {
+                log("fineTurning")
+                continue
+            }
+            mCameraFrontBytes = null
+            if (turning()) {
+                log("turning")
+                continue
+            }
+            log("no turning...")
         }
     })
 
